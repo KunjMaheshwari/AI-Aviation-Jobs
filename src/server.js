@@ -11,12 +11,15 @@ const app = express();
 const PORT = Number(process.env.PORT || 3000);
 const SESSION_TTL_SECONDS = 8 * 60 * 60;
 const SESSION_TTL_MS = SESSION_TTL_SECONDS * 1000;
+const runtimeEnvironment = process.env.NODE_ENV || 'development';
+const secureCookies = !['development', 'test'].includes(runtimeEnvironment);
 
 app.disable('x-powered-by');
 app.use(helmet());
 app.use(express.json({ limit: '100kb' }));
 app.use(express.urlencoded({ extended: true, limit: '20kb' }));
 app.use(express.static(path.join(__dirname, '..', 'public'), { etag: true }));
+app.use(csrfProtection);
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -137,6 +140,15 @@ function auth(req, res, next) {
   next();
 }
 
+function csrfProtection(req, res, next) {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) || req.get('authorization')) return next();
+  const origin = req.get('origin');
+  if (!origin) return next();
+  const expectedOrigin = `${req.protocol}://${req.get('host')}`;
+  if (origin !== expectedOrigin) return res.status(403).json({ message: 'Cross-origin request blocked' });
+  next();
+}
+
 function requireRole(role) {
   return (req, res, next) => {
     if (req.user.role !== role) return res.status(403).json({ message: `${role[0].toUpperCase()}${role.slice(1)} access required` });
@@ -193,13 +205,13 @@ app.post('/api/auth/login', loginLimiter, (req, res) => {
   const accessToken = crypto.randomBytes(32).toString('hex');
   db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
     .run(hashToken(accessToken), user.id, Date.now() + SESSION_TTL_MS);
-  res.setHeader('Set-Cookie', `session=${encodeURIComponent(accessToken)}; Max-Age=${SESSION_TTL_SECONDS}; Path=/; HttpOnly; SameSite=Lax${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`);
-  res.json({ accessToken, user: publicUser(user) });
+  res.setHeader('Set-Cookie', `session=${encodeURIComponent(accessToken)}; Max-Age=${SESSION_TTL_SECONDS}; Path=/; HttpOnly; SameSite=Lax${secureCookies ? '; Secure' : ''}`);
+  res.json({ user: publicUser(user) });
 });
 
 app.post('/api/auth/logout', auth, (req, res) => {
   db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(req.tokenHash);
-  res.setHeader('Set-Cookie', 'session=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax');
+  res.setHeader('Set-Cookie', `session=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax${secureCookies ? '; Secure' : ''}`);
   res.status(204).end();
 });
 

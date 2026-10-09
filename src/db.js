@@ -2,7 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 
-if (process.env.NODE_ENV === 'production' && !process.env.DATABASE_PATH) {
+const runtimeEnvironment = process.env.NODE_ENV || 'development';
+if (!['development', 'test'].includes(runtimeEnvironment) && !process.env.DATABASE_PATH) {
   throw new Error('DATABASE_PATH must be configured in production.');
 }
 const defaultPath = process.env.NODE_ENV === 'test' ? 'data/test.sqlite' : 'data/app.sqlite';

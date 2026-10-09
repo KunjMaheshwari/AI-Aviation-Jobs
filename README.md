@@ -31,7 +31,13 @@ The server exposes:
 
 Authentication passwords are stored as bcrypt hashes. Login creates a
 server-side session record containing only a SHA-256 token hash and an
-eight-hour expiry. Logout invalidates the session.
+eight-hour expiry. Logout invalidates the session. Browser state-changing
+requests validate the same-origin `Origin` header, and deployed environments
+use `Secure` cookies automatically; development and test environments use
+non-`Secure` cookies for local HTTP.
+
+The login API does not expose the bearer token in JSON. Browser and API
+clients should use the HttpOnly session cookie.
 
 A realistic AI-powered aviation recruitment portal created as a portfolio/testing project. It contains candidate and employer workflows and a Playwright automation suite covering UI, API, responsive, smoke and regression scenarios.
 
