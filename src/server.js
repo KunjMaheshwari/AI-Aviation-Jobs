@@ -32,6 +32,11 @@ const jobs = [
 const applications = [
   { id: 'APP-1001', jobId: 'JOB-1003', candidateId: 'USR-1001', status: 'Under Review', appliedAt: '2026-09-20' }
 ];
+const initialData = {
+  users: structuredClone(users),
+  jobs: structuredClone(jobs),
+  applications: structuredClone(applications)
+};
 
 const sessions = new Map();
 
@@ -41,6 +46,7 @@ function auth(req, res, next) {
   const session = sessions.get(bearer.replace('Bearer ', ''));
   if (!session) return res.status(401).json({ message: 'Authentication required' });
   req.user = users.find(u => u.id === session.userId);
+  if (!req.user) return res.status(401).json({ message: 'Authentication required' });
   next();
 }
 function publicUser(user) {
@@ -60,6 +66,7 @@ app.post('/api/auth/login', (req, res) => {
 app.post('/api/auth/register', (req, res) => {
   const { firstName, lastName, email, password, role = 'candidate' } = req.body;
   if (!firstName || !lastName || !email || !password) return res.status(400).json({ message: 'All required fields must be provided' });
+  if (role !== 'candidate') return res.status(400).json({ message: 'Only candidate registration is supported' });
   if (users.some(u => u.email === email)) return res.status(409).json({ message: 'Email already registered' });
   const user = { id: `USR-${Date.now()}`, role, email, password, firstName, lastName, skills: [], experience: 0 };
   users.push(user);
@@ -93,7 +100,16 @@ app.post('/api/jobs', auth, (req, res) => {
 });
 
 app.put('/api/profile', auth, (req, res) => {
-  Object.assign(req.user, req.body);
+  const { firstName, lastName, phone, location, skills, experience } = req.body;
+  if (experience !== undefined && (!Number.isFinite(experience) || experience < 0)) {
+    return res.status(400).json({ message: 'Experience must be a non-negative number' });
+  }
+  if (skills !== undefined && (!Array.isArray(skills) || skills.some(skill => typeof skill !== 'string'))) {
+    return res.status(400).json({ message: 'Skills must be an array of strings' });
+  }
+  const updates = { firstName, lastName, phone, location, skills, experience };
+  Object.keys(updates).forEach(key => updates[key] === undefined && delete updates[key]);
+  Object.assign(req.user, updates);
   res.json({ user: publicUser(req.user) });
 });
 
@@ -129,6 +145,16 @@ app.patch('/api/applications/:id/status', auth, (req, res) => {
   appItem.status = req.body.status;
   res.json({ application: appItem });
 });
+
+if (process.env.NODE_ENV === 'test') {
+  app.post('/api/test/reset', (req, res) => {
+    users.splice(0, users.length, ...structuredClone(initialData.users));
+    jobs.splice(0, jobs.length, ...structuredClone(initialData.jobs));
+    applications.splice(0, applications.length, ...structuredClone(initialData.applications));
+    sessions.clear();
+    res.status(204).end();
+  });
+}
 
 app.get('/{*splat}', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
 

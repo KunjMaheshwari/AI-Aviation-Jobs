@@ -10,7 +10,7 @@
     "test:headed": "playwright test --headed",
     "test:debug": "playwright test --debug",
     "test:smoke": "playwright test --grep @smoke",
-    "test:regression": "playwright test tests/regression",
+    "test:regression": "playwright test",
     "report": "playwright show-report"
   },
   "dependencies": {

@@ -22,6 +22,6 @@ test.describe('Job Search', () => {
     await expect(page.getByRole('heading', { name: 'Senior QA Automation Engineer' })).toBeVisible();
     await expect(page.getByText('SkyTech Aviation')).toBeVisible();
     await expect(page.getByText('₹12-18 LPA')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Apply now' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Login as candidate to apply' })).toBeVisible();
   });
 });

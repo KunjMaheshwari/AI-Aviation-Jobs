@@ -1,7 +1,8 @@
 const { defineConfig, devices } = require('@playwright/test');
 module.exports = defineConfig({
   testDir: './tests',
-  fullyParallel: true,
+  fullyParallel: false,
+  workers: 1,
   timeout: 30000,
   expect: { timeout: 5000 },
   reporter: [['html', { open: 'never' }], ['list']],
@@ -16,5 +17,5 @@ module.exports = defineConfig({
     { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
     { name: 'mobile-chrome', use: { ...devices['Pixel 7'] } }
   ],
-  webServer: { command: 'node src/server.js', url: 'http://127.0.0.1:3000', reuseExistingServer: true, timeout: 30000 }
+  webServer: { command: 'node src/server.js', url: 'http://127.0.0.1:3000', reuseExistingServer: true, timeout: 30000, env: { NODE_ENV: 'test' } }
 });

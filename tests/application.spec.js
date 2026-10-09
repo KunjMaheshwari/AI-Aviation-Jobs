@@ -6,9 +6,14 @@ async function login(page) {
   await page.getByLabel('Password').fill('Password@123');
   await page.getByLabel('Role').selectOption('candidate');
   await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page).toHaveURL(/#\/jobs$/);
 }
 
 test.describe('Candidate Application Flow', () => {
+  test.beforeEach(async ({ request }) => {
+    await request.post('/api/test/reset');
+  });
+
   test('@smoke candidate can apply for a job and see it in applications', async ({ page }) => {
     await login(page);
     await page.goto('/#/jobs/JOB-1001');

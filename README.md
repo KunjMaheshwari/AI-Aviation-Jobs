@@ -40,6 +40,11 @@ npm run report
 Candidate: `candidate@test.com` / `Password@123`
 Employer: `employer@test.com` / `Password@123`
 
+## Runtime and production notes
+- The demo server stores users, jobs, applications, and sessions in memory. Restarting it resets runtime data.
+- Demo passwords are intentionally stored in the sample server for local testing only. Use hashed credentials, persistent storage, secret management, and session expiry before deployment.
+- Playwright runs with one worker because the demo server uses shared in-memory state. Test mode exposes a reset-only endpoint for deterministic isolation; it is not enabled outside `NODE_ENV=test`.
+
 ## Suggested test strategy
 1. Smoke: authentication, job search, apply, employer login.
 2. Functional: filters, profile, job posting, duplicate application.

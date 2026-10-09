@@ -1,6 +1,10 @@
 const { test, expect } = require('@playwright/test');
 
 test.describe('Employer Module', () => {
+  test.beforeEach(async ({ request }) => {
+    await request.post('/api/test/reset');
+  });
+
   test('@smoke employer can login and view dashboard', async ({ page }) => {
     await page.goto('/#/login');
     await page.getByLabel('Email').fill('employer@test.com');
