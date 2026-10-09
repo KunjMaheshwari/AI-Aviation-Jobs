@@ -1,5 +1,38 @@
 # AI Aviation Jobs — Playwright JavaScript Testing Project
 
+## Runtime architecture
+
+The application uses Express with a file-backed SQLite database. The
+schema is applied from `migrations/001_initial.sql` when the server starts,
+and `DATABASE_PATH` can point to a different database file. SQLite foreign
+keys, uniqueness constraints, and indexes protect relationships between
+users, jobs, applications, and sessions.
+
+Production and development data are not seeded automatically. To create
+local-only development data, provide a password explicitly and run:
+
+```bash
+SEED_PASSWORD='use-a-local-password-at-least-12-characters' npm run db:seed
+```
+
+Never use the seed command or its local accounts in production.
+
+## Configuration
+
+Copy `.env.example` to a local environment configuration and set
+`DATABASE_PATH` and `PORT` as needed. Production secrets and passwords must
+be supplied through the deployment environment, not committed to the
+repository.
+
+The server exposes:
+
+- `GET /healthz` for process health.
+- `GET /readyz` for database readiness.
+
+Authentication passwords are stored as bcrypt hashes. Login creates a
+server-side session record containing only a SHA-256 token hash and an
+eight-hour expiry. Logout invalidates the session.
+
 A realistic AI-powered aviation recruitment portal created as a portfolio/testing project. It contains candidate and employer workflows and a Playwright automation suite covering UI, API, responsive, smoke and regression scenarios.
 
 ## Modules
@@ -36,14 +69,10 @@ npm run test:regression
 npm run report
 ```
 
-## Demo accounts
-Candidate: `candidate@test.com` / `Password@123`
-Employer: `employer@test.com` / `Password@123`
-
 ## Runtime and production notes
-- The demo server stores users, jobs, applications, and sessions in memory. Restarting it resets runtime data.
-- Demo passwords are intentionally stored in the sample server for local testing only. Use hashed credentials, persistent storage, secret management, and session expiry before deployment.
-- Playwright runs with one worker because the demo server uses shared in-memory state. Test mode exposes a reset-only endpoint for deterministic isolation; it is not enabled outside `NODE_ENV=test`.
+- Test mode creates deterministic fixture accounts in a separate SQLite database. Production and development startup do not create those accounts automatically.
+- Playwright runs with one worker because test reset operations intentionally share one test database. Test mode exposes a reset-only endpoint for deterministic isolation; it is not enabled outside `NODE_ENV=test`.
+- SQLite persistence is appropriate for a single application instance. Use a managed relational database and shared storage before horizontally scaling the service.
 
 ## Suggested test strategy
 1. Smoke: authentication, job search, apply, employer login.

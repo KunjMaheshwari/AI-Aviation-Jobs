@@ -21,6 +21,11 @@ test.describe('API Contract Checks', () => {
     expect(Array.isArray(body.jobs)).toBeTruthy();
   });
 
+  test('health and readiness endpoints report database availability', async ({ request }) => {
+    expect((await request.get('/healthz')).status()).toBe(200);
+    expect((await request.get('/readyz')).status()).toBe(200);
+  });
+
   test('POST /api/auth/login returns access token', async ({ request }) => {
     const response = await request.post('/api/auth/login', { data: { email: 'candidate@test.com', password: 'Password@123', role: 'candidate' } });
     expect(response.status()).toBe(200);
@@ -138,5 +143,30 @@ test.describe('API Contract Checks', () => {
       data: { status: 'Rejected' }
     });
     expect(updateResponse.status()).toBe(403);
+  });
+
+  test('logout invalidates the authenticated session', async ({ request }) => {
+    const token = await login(request, 'candidate@test.com', 'candidate');
+    const logoutResponse = await request.post('/api/auth/logout', {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    expect(logoutResponse.status()).toBe(204);
+    const profileResponse = await request.get('/api/profile', {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    expect(profileResponse.status()).toBe(401);
+  });
+
+  test('registration never creates an employer account', async ({ request }) => {
+    const response = await request.post('/api/auth/register', {
+      data: {
+        firstName: 'New',
+        lastName: 'User',
+        email: 'new-user@test.com',
+        password: 'Strong-password-123',
+        role: 'employer'
+      }
+    });
+    expect(response.status()).toBe(400);
   });
 });

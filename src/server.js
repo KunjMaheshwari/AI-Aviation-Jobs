@@ -1,170 +1,348 @@
 const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
+const helmet = require('helmet');
+const { rateLimit } = require('express-rate-limit');
+const { z } = require('zod');
+const { db, close } = require('./db');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT || 3000);
+const SESSION_TTL_SECONDS = 8 * 60 * 60;
+const SESSION_TTL_MS = SESSION_TTL_SECONDS * 1000;
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static(path.join(__dirname, '..', 'public')));
+app.disable('x-powered-by');
+app.use(helmet());
+app.use(express.json({ limit: '100kb' }));
+app.use(express.urlencoded({ extended: true, limit: '20kb' }));
+app.use(express.static(path.join(__dirname, '..', 'public'), { etag: true }));
 
-const users = [
-  {
-    id: 'USR-1001', role: 'candidate', email: 'candidate@test.com', password: 'Password@123',
-    firstName: 'Aarav', lastName: 'Sharma', phone: '9876543210', location: 'Mumbai',
-    skills: ['JavaScript', 'Playwright', 'API Testing'], experience: 2,
-    resume: 'aarav-sharma-resume.pdf'
-  },
-  {
-    id: 'USR-2001', role: 'employer', email: 'employer@test.com', password: 'Password@123',
-    company: 'SkyTech Aviation', firstName: 'Riya', lastName: 'Mehta', location: 'Bengaluru'
-  },
-  {
-    id: 'USR-2002', role: 'employer', email: 'other-employer@test.com', password: 'Password@123',
-    company: 'Other Aviation', firstName: 'Kabir', lastName: 'Kapoor', location: 'Delhi'
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: process.env.NODE_ENV === 'test' ? 1000 : 20,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { message: 'Too many login attempts. Please try again later.' }
+});
+
+const loginSchema = z.object({
+  email: z.string().trim().email().max(254),
+  password: z.string().min(8).max(128),
+  role: z.enum(['candidate', 'employer'])
+});
+const registrationSchema = z.object({
+  firstName: z.string().trim().min(1).max(100),
+  lastName: z.string().trim().min(1).max(100),
+  email: z.string().trim().email().max(254),
+  password: z.string().min(12).max(128),
+  role: z.literal('candidate').default('candidate')
+});
+const profileSchema = z.object({
+  firstName: z.string().trim().min(1).max(100).optional(),
+  lastName: z.string().trim().min(1).max(100).optional(),
+  phone: z.string().trim().max(30).optional(),
+  location: z.string().trim().max(100).optional(),
+  skills: z.array(z.string().trim().min(1).max(80)).max(30).optional(),
+  experience: z.number().finite().min(0).max(100).optional()
+});
+const jobSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  location: z.string().trim().min(1).max(100),
+  type: z.string().trim().min(1).max(80),
+  experience: z.string().trim().max(80).optional(),
+  salary: z.string().trim().max(80).optional(),
+  skills: z.array(z.string().trim().min(1).max(80)).max(30).optional(),
+  description: z.string().trim().min(1).max(5000)
+}).strict();
+const statusSchema = z.object({
+  status: z.enum(['Applied', 'Under Review', 'Shortlisted', 'Rejected', 'Interview Scheduled'])
+});
+
+function parse(schema, value, res) {
+  const result = schema.safeParse(value);
+  if (!result.success) {
+    res.status(400).json({ message: 'Invalid request data' });
+    return null;
   }
-];
+  return result.data;
+}
 
-const jobs = [
-  { id: 'JOB-1001', ownerId: 'USR-2001', title: 'Senior QA Automation Engineer', company: 'SkyTech Aviation', location: 'Bengaluru', type: 'Full-time', experience: '3-6 years', salary: '₹12-18 LPA', skills: ['Playwright', 'JavaScript', 'API Testing'], description: 'Build reliable UI and API automation for aviation products.', postedDaysAgo: 2 },
-  { id: 'JOB-1002', ownerId: 'USR-2001', title: 'Software Engineer - Aviation Platform', company: 'AeroNext Labs', location: 'Hyderabad', type: 'Full-time', experience: '1-3 years', salary: '₹8-14 LPA', skills: ['JavaScript', 'React', 'Node.js'], description: 'Develop scalable features for an aviation recruitment platform.', postedDaysAgo: 4 },
-  { id: 'JOB-1003', ownerId: 'USR-2001', title: 'QA Analyst', company: 'FlyHigh Systems', location: 'Pune', type: 'Full-time', experience: '2-4 years', salary: '₹7-11 LPA', skills: ['Manual Testing', 'Jira', 'SQL'], description: 'Own functional, regression and exploratory testing for web modules.', postedDaysAgo: 6 },
-  { id: 'JOB-1004', ownerId: 'USR-2001', title: 'SDET - AI Products', company: 'AeroMind AI', location: 'Remote', type: 'Full-time', experience: '2-5 years', salary: '₹10-16 LPA', skills: ['Playwright', 'TypeScript', 'CI/CD'], description: 'Automate AI-powered workflows and quality gates.', postedDaysAgo: 8 }
-];
+function hashToken(value) {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
 
-const applications = [
-  { id: 'APP-1001', jobId: 'JOB-1003', candidateId: 'USR-1001', status: 'Under Review', appliedAt: '2026-09-20' }
-];
-const initialData = {
-  users: structuredClone(users),
-  jobs: structuredClone(jobs),
-  applications: structuredClone(applications)
-};
+function sessionToken(req) {
+  const header = req.get('authorization') || '';
+  if (header.startsWith('Bearer ')) return header.slice(7);
+  const cookie = req.get('cookie') || '';
+  const match = cookie.split(';').map(value => value.trim()).find(value => value.startsWith('session='));
+  return match ? decodeURIComponent(match.slice('session='.length)) : null;
+}
 
-const sessions = new Map();
+function publicUser(user) {
+  return {
+    id: user.id,
+    role: user.role,
+    email: user.email,
+    firstName: user.first_name,
+    lastName: user.last_name,
+    phone: user.phone,
+    location: user.location,
+    company: user.company,
+    skills: JSON.parse(user.skills_json || '[]'),
+    experience: user.experience
+  };
+}
 
-function token() { return crypto.randomBytes(18).toString('hex'); }
+function rowToJob(job) {
+  return {
+    id: job.id,
+    ownerId: job.owner_id,
+    title: job.title,
+    company: job.company,
+    location: job.location,
+    type: job.type,
+    experience: job.experience,
+    salary: job.salary,
+    skills: JSON.parse(job.skills_json || '[]'),
+    description: job.description,
+    postedDaysAgo: job.posted_days_ago
+  };
+}
+
+function rowToApplication(application) {
+  return {
+    id: application.id,
+    jobId: application.job_id,
+    candidateId: application.candidate_id,
+    status: application.status,
+    appliedAt: application.applied_at
+  };
+}
+
 function auth(req, res, next) {
-  const bearer = req.headers.authorization || '';
-  const session = sessions.get(bearer.replace('Bearer ', ''));
-  if (!session) return res.status(401).json({ message: 'Authentication required' });
-  req.user = users.find(u => u.id === session.userId);
-  if (!req.user) return res.status(401).json({ message: 'Authentication required' });
+  const token = sessionToken(req);
+  if (!token) return res.status(401).json({ message: 'Authentication required' });
+  const tokenHash = hashToken(token);
+  const session = db.prepare('SELECT user_id, expires_at FROM sessions WHERE token_hash = ?').get(tokenHash);
+  if (!session || session.expires_at <= Date.now()) {
+    if (session) db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash);
+    return res.status(401).json({ message: 'Authentication required' });
+  }
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(session.user_id);
+  if (!user) return res.status(401).json({ message: 'Authentication required' });
+  req.user = user;
+  req.tokenHash = tokenHash;
   next();
 }
-function publicUser(user) {
-  const { password, ...safe } = user;
-  return safe;
+
+function requireRole(role) {
+  return (req, res, next) => {
+    if (req.user.role !== role) return res.status(403).json({ message: `${role[0].toUpperCase()}${role.slice(1)} access required` });
+    next();
+  };
 }
 
-app.post('/api/auth/login', (req, res) => {
-  const { email, password, role } = req.body;
-  const user = users.find(u => u.email === email && u.password === password && u.role === role);
-  if (!user) return res.status(401).json({ message: 'Invalid email, password, or role' });
-  const accessToken = token();
-  sessions.set(accessToken, { userId: user.id });
+function seedTestData() {
+  if (process.env.NODE_ENV !== 'test') return;
+  const passwordHash = bcrypt.hashSync('Password@123', 10);
+  const seed = db.transaction(() => {
+    db.exec('DELETE FROM sessions; DELETE FROM applications; DELETE FROM jobs; DELETE FROM users;');
+    const addUser = db.prepare(`INSERT INTO users
+      (id, role, email, password_hash, first_name, last_name, phone, location, company, skills_json, experience)
+      VALUES (@id, @role, @email, @passwordHash, @firstName, @lastName, @phone, @location, @company, @skills, @experience)`);
+    addUser.run({ id: 'USR-1001', role: 'candidate', email: 'candidate@test.com', passwordHash, firstName: 'Aarav', lastName: 'Sharma', phone: '9876543210', location: 'Mumbai', company: null, skills: JSON.stringify(['JavaScript', 'Playwright', 'API Testing']), experience: 2 });
+    addUser.run({ id: 'USR-2001', role: 'employer', email: 'employer@test.com', passwordHash, firstName: 'Riya', lastName: 'Mehta', phone: null, location: 'Bengaluru', company: 'SkyTech Aviation', skills: '[]', experience: 0 });
+    addUser.run({ id: 'USR-2002', role: 'employer', email: 'other-employer@test.com', passwordHash, firstName: 'Kabir', lastName: 'Kapoor', phone: null, location: 'Delhi', company: 'Other Aviation', skills: '[]', experience: 0 });
+    const addJob = db.prepare(`INSERT INTO jobs
+      (id, owner_id, title, company, location, type, experience, salary, skills_json, description, posted_days_ago)
+      VALUES (@id, @ownerId, @title, @company, @location, @type, @experience, @salary, @skills, @description, @postedDaysAgo)`);
+    const jobs = [
+      ['JOB-1001', 'USR-2001', 'Senior QA Automation Engineer', 'SkyTech Aviation', 'Bengaluru', 'Full-time', '3-6 years', '₹12-18 LPA', ['Playwright', 'JavaScript', 'API Testing'], 'Build reliable UI and API automation for aviation products.', 2],
+      ['JOB-1002', 'USR-2001', 'Software Engineer - Aviation Platform', 'AeroNext Labs', 'Hyderabad', 'Full-time', '1-3 years', '₹8-14 LPA', ['JavaScript', 'React', 'Node.js'], 'Develop scalable features for an aviation recruitment platform.', 4],
+      ['JOB-1003', 'USR-2001', 'QA Analyst', 'FlyHigh Systems', 'Pune', 'Full-time', '2-4 years', '₹7-11 LPA', ['Manual Testing', 'Jira', 'SQL'], 'Own functional, regression and exploratory testing for web modules.', 6],
+      ['JOB-1004', 'USR-2001', 'SDET - AI Products', 'AeroMind AI', 'Remote', 'Full-time', '2-5 years', '₹10-16 LPA', ['Playwright', 'TypeScript', 'CI/CD'], 'Automate AI-powered workflows and quality gates.', 8]
+    ];
+    jobs.forEach(([id, ownerId, title, company, location, type, experience, salary, skills, description, postedDaysAgo]) => addJob.run({ id, ownerId, title, company, location, type, experience, salary, skills: JSON.stringify(skills), description, postedDaysAgo }));
+    db.prepare(`INSERT INTO applications (id, job_id, candidate_id, status, applied_at)
+      VALUES (?, ?, ?, ?, ?)`).run('APP-1001', 'JOB-1003', 'USR-1001', 'Under Review', '2026-09-20');
+  });
+  seed();
+}
+
+seedTestData();
+
+app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
+app.get('/readyz', (req, res) => {
+  try {
+    db.prepare('SELECT 1').get();
+    res.json({ status: 'ready' });
+  } catch {
+    res.status(503).json({ status: 'not_ready' });
+  }
+});
+
+app.post('/api/auth/login', loginLimiter, (req, res) => {
+  const input = parse(loginSchema, req.body, res);
+  if (!input) return;
+  const user = db.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE AND role = ?').get(input.email, input.role);
+  if (!user || !bcrypt.compareSync(input.password, user.password_hash)) {
+    return res.status(401).json({ message: 'Invalid email, password, or role' });
+  }
+  const accessToken = crypto.randomBytes(32).toString('hex');
+  db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
+    .run(hashToken(accessToken), user.id, Date.now() + SESSION_TTL_MS);
+  res.setHeader('Set-Cookie', `session=${encodeURIComponent(accessToken)}; Max-Age=${SESSION_TTL_SECONDS}; Path=/; HttpOnly; SameSite=Lax${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`);
   res.json({ accessToken, user: publicUser(user) });
 });
 
+app.post('/api/auth/logout', auth, (req, res) => {
+  db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(req.tokenHash);
+  res.setHeader('Set-Cookie', 'session=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax');
+  res.status(204).end();
+});
+
 app.post('/api/auth/register', (req, res) => {
-  const { firstName, lastName, email, password, role = 'candidate' } = req.body;
-  if (!firstName || !lastName || !email || !password) return res.status(400).json({ message: 'All required fields must be provided' });
-  if (role !== 'candidate') return res.status(400).json({ message: 'Only candidate registration is supported' });
-  if (users.some(u => u.email === email)) return res.status(409).json({ message: 'Email already registered' });
-  const user = { id: `USR-${Date.now()}`, role, email, password, firstName, lastName, skills: [], experience: 0 };
-  users.push(user);
-  res.status(201).json({ user: publicUser(user) });
+  const input = parse(registrationSchema, req.body, res);
+  if (!input) return;
+  if (db.prepare('SELECT 1 FROM users WHERE email = ? COLLATE NOCASE').get(input.email)) {
+    return res.status(409).json({ message: 'Email already registered' });
+  }
+  const user = {
+    id: `USR-${crypto.randomUUID()}`,
+    role: 'candidate',
+    email: input.email,
+    passwordHash: bcrypt.hashSync(input.password, 12),
+    firstName: input.firstName,
+    lastName: input.lastName
+  };
+  db.prepare(`INSERT INTO users
+    (id, role, email, password_hash, first_name, last_name, skills_json, experience)
+    VALUES (?, ?, ?, ?, ?, ?, '[]', 0)`)
+    .run(user.id, user.role, user.email, user.passwordHash, user.firstName, user.lastName);
+  res.status(201).json({ user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(user.id)) });
 });
 
 app.get('/api/jobs', (req, res) => {
-  const { keyword = '', location = '', type = '' } = req.query;
-  const q = keyword.toLowerCase();
-  const result = jobs.filter(job =>
-    (!q || `${job.title} ${job.company} ${job.skills.join(' ')}`.toLowerCase().includes(q)) &&
-    (!location || job.location.toLowerCase() === location.toLowerCase()) &&
-    (!type || job.type === type)
-  );
-  res.json({ jobs: result, total: result.length });
+  const querySchema = z.object({ keyword: z.string().max(100).default(''), location: z.string().max(100).default(''), type: z.string().max(80).default('') }).strict();
+  const input = parse(querySchema, req.query, res);
+  if (!input) return;
+  const keyword = input.keyword.toLowerCase();
+  const jobs = db.prepare('SELECT * FROM jobs ORDER BY rowid DESC').all()
+    .map(rowToJob)
+    .filter(job => (!keyword || `${job.title} ${job.company} ${job.skills.join(' ')}`.toLowerCase().includes(keyword)) &&
+      (!input.location || job.location.toLowerCase() === input.location.toLowerCase()) &&
+      (!input.type || job.type === input.type));
+  res.json({ jobs, total: jobs.length });
 });
 
 app.get('/api/jobs/:id', (req, res) => {
-  const job = jobs.find(j => j.id === req.params.id);
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
   if (!job) return res.status(404).json({ message: 'Job not found' });
-  res.json(job);
+  res.json(rowToJob(job));
 });
 
-app.post('/api/jobs', auth, (req, res) => {
-  if (req.user.role !== 'employer') return res.status(403).json({ message: 'Employer access required' });
-  const { title, location, type, experience, salary, skills, description } = req.body;
-  if (!title || !location || !type || !description) return res.status(400).json({ message: 'Title, location, type and description are required' });
-  const job = { id: `JOB-${Date.now()}`, ownerId: req.user.id, title, company: req.user.company, location, type, experience: experience || 'Not specified', salary: salary || 'Not specified', skills: Array.isArray(skills) ? skills : [], description, postedDaysAgo: 0 };
-  jobs.unshift(job);
-  res.status(201).json(job);
+app.post('/api/jobs', auth, requireRole('employer'), (req, res) => {
+  const input = parse(jobSchema, req.body, res);
+  if (!input) return;
+  const id = `JOB-${crypto.randomUUID()}`;
+  db.prepare(`INSERT INTO jobs
+    (id, owner_id, title, company, location, type, experience, salary, skills_json, description, posted_days_ago)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`)
+    .run(id, req.user.id, input.title, req.user.company, input.location, input.type, input.experience || 'Not specified', input.salary || 'Not specified', JSON.stringify(input.skills || []), input.description);
+  res.status(201).json(rowToJob(db.prepare('SELECT * FROM jobs WHERE id = ?').get(id)));
 });
 
-app.put('/api/profile', auth, (req, res) => {
-  const { firstName, lastName, phone, location, skills, experience } = req.body;
-  if (experience !== undefined && (!Number.isFinite(experience) || experience < 0)) {
-    return res.status(400).json({ message: 'Experience must be a non-negative number' });
+app.put('/api/profile', auth, requireRole('candidate'), (req, res) => {
+  const input = parse(profileSchema, req.body, res);
+  if (!input) return;
+  const columns = { firstName: 'first_name', lastName: 'last_name', phone: 'phone', location: 'location', experience: 'experience' };
+  const updates = [];
+  const values = [];
+  for (const [key, column] of Object.entries(columns)) {
+    if (input[key] !== undefined) {
+      updates.push(`${column} = ?`);
+      values.push(input[key]);
+    }
   }
-  if (skills !== undefined && (!Array.isArray(skills) || skills.some(skill => typeof skill !== 'string'))) {
-    return res.status(400).json({ message: 'Skills must be an array of strings' });
+  if (input.skills !== undefined) {
+    updates.push('skills_json = ?');
+    values.push(JSON.stringify(input.skills));
   }
-  const updates = { firstName, lastName, phone, location, skills, experience };
-  Object.keys(updates).forEach(key => updates[key] === undefined && delete updates[key]);
-  Object.assign(req.user, updates);
+  if (updates.length) {
+    values.push(req.user.id);
+    db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+  }
+  res.json({ user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id)) });
+});
+
+app.get('/api/profile', auth, requireRole('candidate'), (req, res) => {
   res.json({ user: publicUser(req.user) });
 });
 
-app.get('/api/profile', auth, (req, res) => res.json({ user: publicUser(req.user) }));
-
-app.post('/api/jobs/:id/apply', auth, (req, res) => {
-  if (req.user.role !== 'candidate') return res.status(403).json({ message: 'Candidate access required' });
-  const job = jobs.find(j => j.id === req.params.id);
+app.post('/api/jobs/:id/apply', auth, requireRole('candidate'), (req, res) => {
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
   if (!job) return res.status(404).json({ message: 'Job not found' });
-  if (applications.some(a => a.jobId === job.id && a.candidateId === req.user.id)) return res.status(409).json({ message: 'You have already applied for this job' });
-  const application = { id: `APP-${Date.now()}`, jobId: job.id, candidateId: req.user.id, status: 'Applied', appliedAt: new Date().toISOString().slice(0, 10) };
-  applications.push(application);
+  if (db.prepare('SELECT 1 FROM applications WHERE job_id = ? AND candidate_id = ?').get(job.id, req.user.id)) {
+    return res.status(409).json({ message: 'You have already applied for this job' });
+  }
+  const application = { id: `APP-${crypto.randomUUID()}`, jobId: job.id, candidateId: req.user.id, status: 'Applied', appliedAt: new Date().toISOString().slice(0, 10) };
+  db.prepare('INSERT INTO applications (id, job_id, candidate_id, status, applied_at) VALUES (?, ?, ?, ?, ?)')
+    .run(application.id, application.jobId, application.candidateId, application.status, application.appliedAt);
   res.status(201).json({ application });
 });
 
-app.get('/api/applications/me', auth, (req, res) => {
-  const mine = applications.filter(a => a.candidateId === req.user.id).map(a => ({ ...a, job: jobs.find(j => j.id === a.jobId) }));
-  res.json({ applications: mine });
+app.get('/api/applications/me', auth, requireRole('candidate'), (req, res) => {
+  const applications = db.prepare(`SELECT a.*, j.id AS job_id_value, j.owner_id, j.title, j.company, j.location,
+    j.type, j.experience, j.salary, j.skills_json, j.description, j.posted_days_ago
+    FROM applications a JOIN jobs j ON j.id = a.job_id WHERE a.candidate_id = ?`).all(req.user.id);
+  res.json({ applications: applications.map(a => ({ ...rowToApplication(a), job: rowToJob({ id: a.job_id_value, owner_id: a.owner_id, title: a.title, company: a.company, location: a.location, type: a.type, experience: a.experience, salary: a.salary, skills_json: a.skills_json, description: a.description, posted_days_ago: a.posted_days_ago }) })) });
 });
 
-app.get('/api/employer/applications', auth, (req, res) => {
-  if (req.user.role !== 'employer') return res.status(403).json({ message: 'Employer access required' });
-  const mine = applications
-    .map(a => ({ application: a, job: jobs.find(j => j.id === a.jobId) }))
-    .filter(({ job }) => job && job.ownerId === req.user.id)
-    .map(({ application: a, job }) => ({ ...a, candidate: publicUser(users.find(u => u.id === a.candidateId)), job }));
-  res.json({ applications: mine });
+app.get('/api/employer/applications', auth, requireRole('employer'), (req, res) => {
+  const applications = db.prepare(`SELECT a.*, u.first_name, u.last_name, u.email,
+    j.id AS job_id_value, j.owner_id, j.title, j.company, j.location, j.type, j.experience,
+    j.salary, j.skills_json, j.description, j.posted_days_ago
+    FROM applications a JOIN jobs j ON j.id = a.job_id
+    JOIN users u ON u.id = a.candidate_id
+    WHERE j.owner_id = ?`).all(req.user.id);
+  res.json({
+    applications: applications.map(a => ({
+      ...rowToApplication(a),
+      candidate: { firstName: a.first_name, lastName: a.last_name, email: a.email },
+      job: rowToJob({ id: a.job_id_value, owner_id: a.owner_id, title: a.title, company: a.company, location: a.location, type: a.type, experience: a.experience, salary: a.salary, skills_json: a.skills_json, description: a.description, posted_days_ago: a.posted_days_ago })
+    }))
+  });
 });
 
-app.patch('/api/applications/:id/status', auth, (req, res) => {
-  if (req.user.role !== 'employer') return res.status(403).json({ message: 'Employer access required' });
-  const appItem = applications.find(a => a.id === req.params.id);
-  if (!appItem) return res.status(404).json({ message: 'Application not found' });
-  const job = jobs.find(j => j.id === appItem.jobId);
-  if (!job || job.ownerId !== req.user.id) return res.status(404).json({ message: 'Application not found' });
-  const allowed = ['Applied', 'Under Review', 'Shortlisted', 'Rejected', 'Interview Scheduled'];
-  if (!allowed.includes(req.body.status)) return res.status(400).json({ message: 'Invalid application status' });
-  appItem.status = req.body.status;
-  res.json({ application: appItem });
+app.patch('/api/applications/:id/status', auth, requireRole('employer'), (req, res) => {
+  const input = parse(statusSchema, req.body, res);
+  if (!input) return;
+  const application = db.prepare(`SELECT a.* FROM applications a JOIN jobs j ON j.id = a.job_id
+    WHERE a.id = ? AND j.owner_id = ?`).get(req.params.id, req.user.id);
+  if (!application) return res.status(404).json({ message: 'Application not found' });
+  db.prepare('UPDATE applications SET status = ? WHERE id = ?').run(input.status, application.id);
+  res.json({ application: rowToApplication({ ...application, status: input.status }) });
 });
 
 if (process.env.NODE_ENV === 'test') {
   app.post('/api/test/reset', (req, res) => {
-    users.splice(0, users.length, ...structuredClone(initialData.users));
-    jobs.splice(0, jobs.length, ...structuredClone(initialData.jobs));
-    applications.splice(0, applications.length, ...structuredClone(initialData.applications));
-    sessions.clear();
+    seedTestData();
     res.status(204).end();
   });
 }
 
 app.get('/{*splat}', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
 
-app.listen(PORT, () => console.log(`AI Aviation Jobs running at http://localhost:${PORT}`));
+const server = app.listen(PORT, () => console.log(`AI Aviation Jobs running at http://localhost:${PORT}`));
+function shutdown() {
+  server.close(() => {
+    close();
+    process.exit(0);
+  });
+}
+process.once('SIGTERM', shutdown);
+process.once('SIGINT', shutdown);
+
+module.exports = { app, server };

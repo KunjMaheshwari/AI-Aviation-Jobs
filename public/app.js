@@ -1,12 +1,12 @@
 const app = document.querySelector('#app');
 const logoutBtn = document.querySelector('#logoutBtn');
 const toast = document.querySelector('#toast');
-const state = { token: localStorage.getItem('token'), user: JSON.parse(localStorage.getItem('user') || 'null') };
+const state = { token: localStorage.getItem('authenticated') ? 'cookie' : null, user: JSON.parse(localStorage.getItem('user') || 'null') };
 
 function api(path, options = {}) {
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
-  if (state.token) headers.Authorization = `Bearer ${state.token}`;
-  return fetch(path, { ...options, headers }).then(async r => {
+  if (state.token && state.token !== 'cookie') headers.Authorization = `Bearer ${state.token}`;
+  return fetch(path, { ...options, headers, credentials: 'same-origin' }).then(async r => {
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.message || 'Request failed');
     return data;
@@ -14,9 +14,20 @@ function api(path, options = {}) {
 }
 function showToast(message) { toast.textContent = message; toast.style.display = 'block'; setTimeout(() => toast.style.display = 'none', 2500); }
 function esc(v = '') { return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
-function setSession(data) { state.token = data.accessToken; state.user = data.user; localStorage.setItem('token', state.token); localStorage.setItem('user', JSON.stringify(state.user)); updateNav(); }
+function setSession(data) { state.token = 'cookie'; state.user = data.user; localStorage.setItem('authenticated', '1'); localStorage.setItem('user', JSON.stringify(state.user)); updateNav(); }
 function updateNav() { logoutBtn.classList.toggle('hidden', !state.token); }
-logoutBtn.onclick = () => { localStorage.clear(); state.token = null; state.user = null; updateNav(); location.hash = '#/login'; };
+logoutBtn.onclick = async () => {
+  try {
+    if (state.token) await api('/api/auth/logout', { method: 'POST' });
+  } finally {
+    localStorage.removeItem('authenticated');
+    localStorage.removeItem('user');
+    state.token = null;
+    state.user = null;
+    updateNav();
+    location.hash = '#/login';
+  }
+};
 
 async function renderJobs() {
   if (location.hash !== '#/jobs') return;
@@ -38,7 +49,7 @@ async function renderJobs() {
 }
 
 function renderLogin() {
-  app.innerHTML = `<div class="card form"><h2>Sign in</h2><p class="meta">Demo candidate: candidate@test.com / Password@123</p><p class="meta">Demo employer: employer@test.com / Password@123</p><form id="loginForm"><div class="form-row"><label for="email">Email</label><input id="email" type="email" required/></div><div class="form-row"><label for="password">Password</label><input id="password" type="password" required/></div><div class="form-row"><label for="role">Role</label><select id="role"><option value="candidate">Candidate</option><option value="employer">Employer</option></select></div><div id="error"></div><button>Sign in</button></form></div>`;
+  app.innerHTML = `<div class="card form"><h2>Sign in</h2><form id="loginForm"><div class="form-row"><label for="email">Email</label><input id="email" type="email" required/></div><div class="form-row"><label for="password">Password</label><input id="password" type="password" required/></div><div class="form-row"><label for="role">Role</label><select id="role"><option value="candidate">Candidate</option><option value="employer">Employer</option></select></div><div id="error"></div><button>Sign in</button></form></div>`;
   const loginForm = document.querySelector('#loginForm');
   const email = document.querySelector('#email');
   const password = document.querySelector('#password');
