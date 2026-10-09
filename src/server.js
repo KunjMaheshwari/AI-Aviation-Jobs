@@ -19,14 +19,18 @@ const users = [
   {
     id: 'USR-2001', role: 'employer', email: 'employer@test.com', password: 'Password@123',
     company: 'SkyTech Aviation', firstName: 'Riya', lastName: 'Mehta', location: 'Bengaluru'
+  },
+  {
+    id: 'USR-2002', role: 'employer', email: 'other-employer@test.com', password: 'Password@123',
+    company: 'Other Aviation', firstName: 'Kabir', lastName: 'Kapoor', location: 'Delhi'
   }
 ];
 
 const jobs = [
-  { id: 'JOB-1001', title: 'Senior QA Automation Engineer', company: 'SkyTech Aviation', location: 'Bengaluru', type: 'Full-time', experience: '3-6 years', salary: '₹12-18 LPA', skills: ['Playwright', 'JavaScript', 'API Testing'], description: 'Build reliable UI and API automation for aviation products.', postedDaysAgo: 2 },
-  { id: 'JOB-1002', title: 'Software Engineer - Aviation Platform', company: 'AeroNext Labs', location: 'Hyderabad', type: 'Full-time', experience: '1-3 years', salary: '₹8-14 LPA', skills: ['JavaScript', 'React', 'Node.js'], description: 'Develop scalable features for an aviation recruitment platform.', postedDaysAgo: 4 },
-  { id: 'JOB-1003', title: 'QA Analyst', company: 'FlyHigh Systems', location: 'Pune', type: 'Full-time', experience: '2-4 years', salary: '₹7-11 LPA', skills: ['Manual Testing', 'Jira', 'SQL'], description: 'Own functional, regression and exploratory testing for web modules.', postedDaysAgo: 6 },
-  { id: 'JOB-1004', title: 'SDET - AI Products', company: 'AeroMind AI', location: 'Remote', type: 'Full-time', experience: '2-5 years', salary: '₹10-16 LPA', skills: ['Playwright', 'TypeScript', 'CI/CD'], description: 'Automate AI-powered workflows and quality gates.', postedDaysAgo: 8 }
+  { id: 'JOB-1001', ownerId: 'USR-2001', title: 'Senior QA Automation Engineer', company: 'SkyTech Aviation', location: 'Bengaluru', type: 'Full-time', experience: '3-6 years', salary: '₹12-18 LPA', skills: ['Playwright', 'JavaScript', 'API Testing'], description: 'Build reliable UI and API automation for aviation products.', postedDaysAgo: 2 },
+  { id: 'JOB-1002', ownerId: 'USR-2001', title: 'Software Engineer - Aviation Platform', company: 'AeroNext Labs', location: 'Hyderabad', type: 'Full-time', experience: '1-3 years', salary: '₹8-14 LPA', skills: ['JavaScript', 'React', 'Node.js'], description: 'Develop scalable features for an aviation recruitment platform.', postedDaysAgo: 4 },
+  { id: 'JOB-1003', ownerId: 'USR-2001', title: 'QA Analyst', company: 'FlyHigh Systems', location: 'Pune', type: 'Full-time', experience: '2-4 years', salary: '₹7-11 LPA', skills: ['Manual Testing', 'Jira', 'SQL'], description: 'Own functional, regression and exploratory testing for web modules.', postedDaysAgo: 6 },
+  { id: 'JOB-1004', ownerId: 'USR-2001', title: 'SDET - AI Products', company: 'AeroMind AI', location: 'Remote', type: 'Full-time', experience: '2-5 years', salary: '₹10-16 LPA', skills: ['Playwright', 'TypeScript', 'CI/CD'], description: 'Automate AI-powered workflows and quality gates.', postedDaysAgo: 8 }
 ];
 
 const applications = [
@@ -94,7 +98,7 @@ app.post('/api/jobs', auth, (req, res) => {
   if (req.user.role !== 'employer') return res.status(403).json({ message: 'Employer access required' });
   const { title, location, type, experience, salary, skills, description } = req.body;
   if (!title || !location || !type || !description) return res.status(400).json({ message: 'Title, location, type and description are required' });
-  const job = { id: `JOB-${Date.now()}`, title, company: req.user.company, location, type, experience: experience || 'Not specified', salary: salary || 'Not specified', skills: Array.isArray(skills) ? skills : [], description, postedDaysAgo: 0 };
+  const job = { id: `JOB-${Date.now()}`, ownerId: req.user.id, title, company: req.user.company, location, type, experience: experience || 'Not specified', salary: salary || 'Not specified', skills: Array.isArray(skills) ? skills : [], description, postedDaysAgo: 0 };
   jobs.unshift(job);
   res.status(201).json(job);
 });
@@ -132,7 +136,10 @@ app.get('/api/applications/me', auth, (req, res) => {
 
 app.get('/api/employer/applications', auth, (req, res) => {
   if (req.user.role !== 'employer') return res.status(403).json({ message: 'Employer access required' });
-  const mine = applications.map(a => ({ ...a, candidate: publicUser(users.find(u => u.id === a.candidateId)), job: jobs.find(j => j.id === a.jobId) }));
+  const mine = applications
+    .map(a => ({ application: a, job: jobs.find(j => j.id === a.jobId) }))
+    .filter(({ job }) => job && job.ownerId === req.user.id)
+    .map(({ application: a, job }) => ({ ...a, candidate: publicUser(users.find(u => u.id === a.candidateId)), job }));
   res.json({ applications: mine });
 });
 
@@ -140,6 +147,8 @@ app.patch('/api/applications/:id/status', auth, (req, res) => {
   if (req.user.role !== 'employer') return res.status(403).json({ message: 'Employer access required' });
   const appItem = applications.find(a => a.id === req.params.id);
   if (!appItem) return res.status(404).json({ message: 'Application not found' });
+  const job = jobs.find(j => j.id === appItem.jobId);
+  if (!job || job.ownerId !== req.user.id) return res.status(404).json({ message: 'Application not found' });
   const allowed = ['Applied', 'Under Review', 'Shortlisted', 'Rejected', 'Interview Scheduled'];
   if (!allowed.includes(req.body.status)) return res.status(400).json({ message: 'Invalid application status' });
   appItem.status = req.body.status;
