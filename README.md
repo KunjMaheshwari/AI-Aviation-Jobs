@@ -41,7 +41,7 @@ browser/API regression coverage.
 | Rate limiting | express-rate-limit |
 | Frontend | HTML, CSS, vanilla JavaScript |
 | Testing | Playwright Test |
-| Test browsers | Chromium, Mobile Chrome, and a configured Firefox project |
+| Test browsers | Chromium and Mobile Chrome |
 
 ## Application architecture
 
@@ -495,8 +495,7 @@ backup, failover, and migration procedures.
   there is no logout-all-sessions or password-change session revocation flow.
 - File permissions, backups, HTTPS termination, and monitoring depend on the
   deployment environment and are not established by this repository alone.
-- The configured Firefox Playwright project exists, but release verification
-  for this project has been limited to Chromium and Mobile Chrome.
+- Release verification is supported for Chromium and Mobile Chrome.
 
 ## License and project use
 

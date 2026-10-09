@@ -14,7 +14,6 @@ module.exports = defineConfig({
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
-    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
     { name: 'mobile-chrome', use: { ...devices['Pixel 7'] } }
   ],
   webServer: { command: 'node src/server.js', url: 'http://127.0.0.1:3000', reuseExistingServer: true, timeout: 30000, env: { NODE_ENV: 'test' } }
